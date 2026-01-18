@@ -2,11 +2,48 @@
 <html lang="en">
     <head>
         <meta charset="UTF-8" />
-        <title>Driver Drowsiness – Camera</title>
+        <title>Drowsiness System – Debug Panel</title>
+        <link rel="stylesheet" href="style.css" />
     </head>
     <body>
-        <h3>Camera Stream</h3>
-        <video id="video" autoplay playsinline></video>
+        <div class="container">
+            <h1>Driver Drowsiness Debug Panel</h1>
+
+            <div class="grid">
+                <!-- Camera -->
+                <div class="box">
+                    <h2>Camera</h2>
+                    <video id="video" autoplay playsinline></video>
+                </div>
+
+                <!-- LED Simulation -->
+                <div class="box">
+                    <h2>ESP32 LEDs</h2>
+
+                    <div class="led-row">
+                        <div id="green-led" class="led green"></div>
+                        <span>Connection</span>
+                    </div>
+
+                    <div class="led-row">
+                        <div id="red-led" class="led red"></div>
+                        <span>Drowsiness</span>
+                    </div>
+                </div>
+
+                <!-- Status -->
+                <div class="box">
+                    <h2>Status</h2>
+                    <pre id="status">Waiting…</pre>
+                </div>
+
+                <!-- Log -->
+                <div class="box log-box">
+                    <h2>Log</h2>
+                    <div id="log"></div>
+                </div>
+            </div>
+        </div>
 
         <script src="script.js"></script>
     </body>
