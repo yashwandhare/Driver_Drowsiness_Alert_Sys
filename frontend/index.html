@@ -1,50 +1,902 @@
 <!doctype html>
 <html lang="en">
-    <head>
-        <meta charset="UTF-8" />
-        <title>Drowsiness System – Debug Panel</title>
-        <link rel="stylesheet" href="style.css" />
-    </head>
-    <body>
-        <div class="container">
-            <h1>Driver Drowsiness Debug Panel</h1>
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>DAS // DROWSINESS ALERT SYSTEM</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=IBM+Plex+Mono:wght@400;500;700&display=swap');
 
-            <div class="grid">
-                <!-- Camera -->
-                <div class="box">
-                    <h2>Camera</h2>
-                    <video id="video" autoplay playsinline></video>
-                </div>
+    :root {
+      --bg:       #0a0a0a;
+      --bg2:      #101010;
+      --bg3:      #181818;
+      --border:   #2f2f2f;
+      --border-b: #565656;
+      --fg:       #e8e8e8;
+      --fg-dim:   #8a8a8a;
+      --green:    #85ff2c;
+      --green-d:  #3f6f1c;
+      --red:      #ff4343;
+      --red-d:    #7f2323;
+      --amber:    #ff9f1a;
+      --amber-d:  #7d5115;
+      --cyan:     #ff9f1a;
+      --white:    #f7f7f7;
+      --font-mono: 'IBM Plex Mono', monospace;
+      --font-head: 'Bebas Neue', sans-serif;
+    }
 
-                <!-- LED Simulation -->
-                <div class="box">
-                    <h2>ESP32 LEDs</h2>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
-                    <div class="led-row">
-                        <div id="green-led" class="led green"></div>
-                        <span>Connection</span>
-                    </div>
+    body {
+      background:
+        radial-gradient(circle at 20% 10%, rgba(255,255,255,0.03), transparent 45%),
+        radial-gradient(circle at 80% 90%, rgba(255,255,255,0.02), transparent 45%),
+        var(--bg);
+      color: var(--fg);
+      font-family: var(--font-mono);
+      font-size: 13px;
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
 
-                    <div class="led-row">
-                        <div id="red-led" class="led red"></div>
-                        <span>Drowsiness</span>
-                    </div>
-                </div>
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background: repeating-linear-gradient(
+        0deg,
+        transparent,
+        transparent 2px,
+        rgba(255,255,255,0.015) 2px,
+        rgba(255,255,255,0.015) 4px
+      );
+      opacity: 0.2;
+      pointer-events: none;
+      z-index: 9999;
+    }
 
-                <!-- Status -->
-                <div class="box">
-                    <h2>Status</h2>
-                    <pre id="status">Waiting…</pre>
-                </div>
+    #header {
+      display: flex;
+      align-items: stretch;
+      border-bottom: 2px solid var(--border-b);
+      background: var(--bg2);
+    }
+    #header-label {
+      font-family: var(--font-head);
+      font-size: 1.5em;
+      letter-spacing: 0.12em;
+      color: var(--white);
+      padding: 14px 20px;
+      border-right: 2px solid var(--border-b);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      text-transform: uppercase;
+    }
+    #header-label .slash { color: var(--green); }
+    #header-sub {
+      display: flex;
+      align-items: center;
+      gap: 0;
+      flex: 1;
+    }
+    .hdr-cell {
+      padding: 0 18px;
+      border-right: 2px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      gap: 2px;
+      height: 100%;
+    }
+    .hdr-cell .lbl { font-size: 0.7em; color: var(--fg-dim); letter-spacing: 0.1em; text-transform: uppercase; }
+    .hdr-cell .val { font-size: 0.95em; color: var(--white); }
+    #state-badge {
+      margin-left: auto;
+      padding: 0 28px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-family: var(--font-head);
+      font-size: 1.3em;
+      letter-spacing: 0.12em;
+      border-left: 2px solid var(--border-b);
+      color: var(--fg-dim);
+      transition: color 0.15s, background 0.15s;
+    }
+    #state-badge.normal  { color: var(--green); }
+    #state-badge.drowsy  { color: var(--red); background: rgba(255,34,34,0.07); animation: badge-pulse 0.5s steps(1) infinite; }
+    #state-badge.offline { color: var(--fg-dim); }
+    @keyframes badge-pulse { 50% { background: rgba(255,34,34,0.18); } }
+    .badge-dot {
+      width: 10px; height: 10px;
+      border-radius: 50%;
+      background: currentColor;
+      flex-shrink: 0;
+    }
+    #state-badge.normal  .badge-dot { box-shadow: 0 0 8px var(--green); }
+    #state-badge.drowsy  .badge-dot { box-shadow: 0 0 8px var(--red); }
 
-                <!-- Log -->
-                <div class="box log-box">
-                    <h2>Log</h2>
-                    <div id="log"></div>
-                </div>
-            </div>
+    #modebar {
+      display: flex;
+      align-items: center;
+      gap: 0;
+      border-bottom: 2px solid var(--border);
+      background: var(--bg2);
+      padding: 0 0 0 0;
+    }
+    .mode-lbl {
+      font-size: 0.7em;
+      letter-spacing: 0.12em;
+      color: var(--fg-dim);
+      text-transform: uppercase;
+      padding: 0 14px;
+      border-right: 2px solid var(--border);
+      height: 36px;
+      display: flex;
+      align-items: center;
+    }
+    .mbtn {
+      height: 36px;
+      padding: 0 16px;
+      border: none;
+      border-right: 2px solid var(--border);
+      background: transparent;
+      color: var(--fg-dim);
+      font-family: var(--font-mono);
+      font-size: 0.82em;
+      letter-spacing: 0.06em;
+      cursor: pointer;
+      text-transform: uppercase;
+      transition: color 0.1s, background 0.1s;
+    }
+    .mbtn:hover { background: var(--bg3); color: var(--white); }
+    .mbtn.active { background: var(--bg3); color: var(--green); border-bottom: 2px solid var(--green); }
+    .mbtn.danger { color: var(--red); }
+    .mbtn.danger:hover { background: rgba(255,34,34,0.08); }
+
+    #layout {
+      display: grid;
+      grid-template-columns: 1fr 340px;
+      grid-template-rows: auto auto;
+      gap: 0;
+      height: calc(100vh - 88px);
+    }
+
+    .panel {
+      border-right: 2px solid var(--border);
+      border-bottom: 2px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .panel-title {
+      font-family: var(--font-head);
+      font-size: 0.65em;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--fg-dim);
+      padding: 7px 12px;
+      border-bottom: 2px solid var(--border);
+      background: var(--bg2);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-shrink: 0;
+    }
+    .panel-title .tag {
+      font-size: 0.85em;
+      background: var(--bg3);
+      border: 1px solid var(--border-b);
+      color: var(--fg-dim);
+      padding: 1px 6px;
+      letter-spacing: 0.05em;
+    }
+    .panel-title .tag.live { color: var(--green); border-color: var(--green-d); }
+    .panel-body { flex: 1; overflow: hidden; position: relative; }
+
+    #panel-cam { grid-row: 1 / 3; }
+    #panel-cam .panel-body {
+      background: #000;
+      position: relative;
+      isolation: isolate;
+    }
+    #panel-cam .panel-body::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background: repeating-linear-gradient(
+        0deg,
+        rgba(255,255,255,0.06) 0 1px,
+        transparent 1px 3px
+      );
+      pointer-events: none;
+      z-index: 5;
+    }
+    #video, #debug-frame {
+      width: 100%; height: 100%;
+      object-fit: contain;
+      display: block;
+      position: relative;
+      z-index: 1;
+    }
+    #preview-note {
+      position: absolute;
+      bottom: 10px; left: 10px;
+      font-size: 0.72em;
+      color: var(--fg-dim);
+      background: rgba(0,0,0,0.7);
+      padding: 3px 7px;
+      pointer-events: none;
+    }
+
+    #right-col {
+      display: flex;
+      flex-direction: column;
+      grid-row: 1 / 3;
+      overflow: hidden;
+    }
+
+    #panel-status .panel-body {
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      overflow-y: auto;
+    }
+    .gauge-row {
+      display: grid;
+      grid-template-columns: 90px 1fr 70px;
+      align-items: center;
+      gap: 8px;
+    }
+    .gauge-lbl { font-size: 0.72em; color: var(--fg-dim); letter-spacing: 0.07em; text-transform: uppercase; }
+    .gauge-bar-wrap { height: 8px; background: var(--bg3); border: 1px solid var(--border); }
+    .gauge-bar { height: 100%; background: var(--green); transition: width 0.3s; }
+    .gauge-bar.warn { background: var(--amber); }
+    .gauge-bar.crit { background: var(--red); }
+    .gauge-val { font-size: 0.85em; color: var(--white); text-align: right; }
+
+    .kv-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1px;
+      border: 1px solid var(--border);
+    }
+    .kv {
+      background: var(--bg2);
+      padding: 7px 10px;
+      border: 1px solid var(--border);
+    }
+    .kv .k { font-size: 0.68em; color: var(--fg-dim); text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 3px; }
+    .kv .v { font-size: 0.92em; color: var(--white); }
+    .kv .v.green { color: var(--green); }
+    .kv .v.red   { color: var(--red); }
+    .kv .v.amber { color: var(--amber); }
+
+    #panel-buzzer {
+      border-top: 2px solid var(--amber-d);
+    }
+    #panel-buzzer .panel-title { border-top: none; }
+    #panel-buzzer .panel-body { padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
+    #dbz-indicator {
+      font-family: var(--font-head);
+      font-size: 0.9em;
+      letter-spacing: 0.1em;
+      color: var(--fg-dim);
+    }
+    #dbz-indicator.active { color: var(--amber); animation: badge-pulse 0.4s steps(1) infinite; }
+    .buzzer-controls { display: grid; grid-template-columns: 60px 1fr 46px; align-items: center; gap: 6px; }
+    .buzzer-controls label { font-size: 0.7em; color: var(--fg-dim); text-transform: uppercase; letter-spacing: 0.07em; }
+    input[type=range] {
+      -webkit-appearance: none;
+      width: 100%; height: 4px;
+      background: var(--bg3);
+      border: 1px solid var(--border-b);
+      outline: none;
+    }
+    input[type=range]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 12px; height: 12px;
+      background: var(--amber);
+      cursor: pointer;
+    }
+    .range-val { font-size: 0.75em; color: var(--amber); text-align: right; }
+    .buzzer-row { display: flex; align-items: center; gap: 10px; }
+    .chk-label { display: flex; align-items: center; gap: 5px; cursor: pointer; font-size: 0.75em; color: var(--fg-dim); text-transform: uppercase; letter-spacing: 0.06em; }
+    input[type=checkbox] { accent-color: var(--amber); width: 13px; height: 13px; cursor: pointer; }
+
+    #panel-log {
+      flex: 1;
+      border-top: 1px solid var(--border);
+    }
+    #panel-log .panel-body { display: flex; flex-direction: column; }
+    #log-wrap {
+      flex: 1;
+      overflow-y: auto;
+      scrollbar-width: thin;
+      scrollbar-color: var(--border-b) transparent;
+    }
+    #log-wrap::-webkit-scrollbar { width: 6px; }
+    #log-wrap::-webkit-scrollbar-track { background: transparent; }
+    #log-wrap::-webkit-scrollbar-thumb { background: var(--border-b); }
+
+    #log-table { width: 100%; border-collapse: collapse; }
+    #log-table thead th {
+      position: sticky; top: 0;
+      background: var(--bg2);
+      border-bottom: 1px solid var(--border-b);
+      padding: 5px 8px;
+      text-align: left;
+      font-size: 0.68em;
+      font-family: var(--font-head);
+      letter-spacing: 0.1em;
+      color: var(--fg-dim);
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+    #log-table tbody tr { border-bottom: 1px solid var(--border); transition: background 0.05s; }
+    #log-table tbody tr:hover { background: var(--bg3); }
+    #log-table tbody tr.row-drowsy { background: rgba(255,34,34,0.08); }
+    #log-table tbody tr.row-event  { background: rgba(57,255,20,0.06); }
+    #log-table tbody tr.row-sys    { background: var(--bg2); }
+    #log-table td {
+      padding: 4px 8px;
+      font-size: 0.75em;
+      white-space: nowrap;
+      color: var(--fg);
+    }
+    #log-table td.td-time  { color: var(--fg-dim); }
+    #log-table td.td-frame { color: var(--fg-dim); }
+    #log-table td.td-ear   { color: var(--cyan); }
+    #log-table td.td-state-normal { color: var(--green); font-family: var(--font-head); font-size: 0.75em; }
+    #log-table td.td-state-drowsy { color: var(--red); font-family: var(--font-head); font-size: 0.75em; }
+    #log-table td.td-event { color: var(--amber); }
+    .log-clr-btn {
+      background: transparent;
+      border: none;
+      color: var(--fg-dim);
+      font-family: var(--font-mono);
+      font-size: 0.72em;
+      cursor: pointer;
+      padding: 2px 6px;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+    .log-clr-btn:hover { color: var(--red); }
+
+    #ear-big {
+      font-family: var(--font-head);
+      font-size: 3.2em;
+      letter-spacing: -0.02em;
+      color: var(--white);
+      line-height: 1;
+      padding: 12px 12px 0;
+      transition: color 0.2s;
+    }
+    #ear-big.warn { color: var(--amber); }
+    #ear-big.crit { color: var(--red); }
+    #ear-sub {
+      font-size: 0.68em;
+      color: var(--fg-dim);
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      padding: 2px 12px 10px;
+    }
+
+    * { scrollbar-width: thin; scrollbar-color: var(--border-b) transparent; }
+
+    @media (max-width: 900px) {
+      #layout { grid-template-columns: 1fr; grid-template-rows: auto; height: auto; }
+      #panel-cam { grid-row: auto; height: 280px; }
+      #right-col { grid-row: auto; }
+    }
+  </style>
+</head>
+<body>
+
+<div id="header">
+  <div id="header-label">
+    <span class="slash">//</span> DAS
+  </div>
+  <div id="header-sub">
+    <div class="hdr-cell">
+      <span class="lbl">System</span>
+      <span class="val">ESP32-CAM + OV3660</span>
+    </div>
+    <div class="hdr-cell">
+      <span class="lbl">Backend</span>
+      <span class="val" id="hdr-backend">:8000</span>
+    </div>
+    <div class="hdr-cell">
+      <span class="lbl">Uptime</span>
+      <span class="val" id="hdr-uptime">00:00:00</span>
+    </div>
+    <div class="hdr-cell">
+      <span class="lbl">Frames RX</span>
+      <span class="val" id="hdr-frames">0</span>
+    </div>
+    <div class="hdr-cell">
+      <span class="lbl">Drop rate</span>
+      <span class="val" id="hdr-drops">0%</span>
+    </div>
+  </div>
+  <div id="state-badge" class="offline">
+    <span class="badge-dot"></span>
+    <span id="badge-text">OFFLINE</span>
+  </div>
+</div>
+
+<div id="modebar">
+  <span class="mode-lbl">// Mode</span>
+  <button class="mbtn" id="mode-virtual">Virtual</button>
+  <button class="mbtn active" id="mode-debug">ESP32 Debug</button>
+  <button class="mbtn" id="start-virtual">▶ Start Webcam</button>
+  <button class="mbtn danger" id="stop-virtual">■ Stop Webcam</button>
+</div>
+
+<div id="layout">
+
+  <div class="panel" id="panel-cam">
+    <div class="panel-title">
+      Camera Feed
+      <span class="tag live" id="cam-tag">● LIVE</span>
+    </div>
+    <div class="panel-body">
+      <video id="video" autoplay playsinline style="display:none"></video>
+      <img id="debug-frame" alt="Waiting for frame…"/>
+      <div id="preview-note">ESP32 debug mode — processed frame from backend</div>
+    </div>
+  </div>
+
+  <div id="right-col">
+
+    <div class="panel" id="panel-status">
+      <div class="panel-title">
+        Detection Status
+        <span class="tag" id="status-tag">WAITING</span>
+      </div>
+      <div class="panel-body">
+        <div id="ear-big">—.—</div>
+        <div id="ear-sub">Eye Aspect Ratio</div>
+
+        <div class="gauge-row">
+          <span class="gauge-lbl">EAR</span>
+          <div class="gauge-bar-wrap"><div class="gauge-bar" id="gauge-ear" style="width:0%"></div></div>
+          <span class="gauge-val" id="gv-ear">—</span>
+        </div>
+        <div class="gauge-row">
+          <span class="gauge-lbl">Closed Frames</span>
+          <div class="gauge-bar-wrap"><div class="gauge-bar" id="gauge-cf" style="width:0%"></div></div>
+          <span class="gauge-val" id="gv-cf">—</span>
         </div>
 
-        <script src="script.js"></script>
-    </body>
+        <div class="kv-grid">
+          <div class="kv"><div class="k">State</div><div class="v" id="kv-state">—</div></div>
+          <div class="kv"><div class="k">Alert Active</div><div class="v" id="kv-alert">—</div></div>
+          <div class="kv"><div class="k">Frames RX</div><div class="v" id="kv-rx">—</div></div>
+          <div class="kv"><div class="k">Decode Fails</div><div class="v" id="kv-fail">—</div></div>
+          <div class="kv"><div class="k">Enqueued</div><div class="v" id="kv-enq">—</div></div>
+          <div class="kv"><div class="k">Last Frame</div><div class="v" id="kv-last">—</div></div>
+          <div class="kv"><div class="k">Fail Rate</div><div class="v" id="kv-failrate">—</div></div>
+          <div class="kv"><div class="k">Worker</div><div class="v" id="kv-worker">—</div></div>
+          <div class="kv"><div class="k">EAR EMA</div><div class="v" id="kv-ema">—</div></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel" id="panel-buzzer">
+      <div class="panel-title">
+        Debug Buzzer <span style="color:var(--amber);font-size:0.8em">// TEMP — remove when GPIO13 wired</span>
+        <span class="tag" style="color:var(--amber);border-color:var(--amber-d)">LAPTOP SPK</span>
+      </div>
+      <div class="panel-body">
+        <div class="buzzer-row">
+          <div id="dbz-indicator">◼ SILENT</div>
+          <label class="chk-label" style="margin-left:auto">
+            <input type="checkbox" id="dbz-enable" checked/> Enabled
+          </label>
+        </div>
+        <div class="buzzer-controls">
+          <label>Volume</label>
+          <input type="range" id="dbz-vol" min="0" max="1" step="0.05" value="0.35"/>
+          <span class="range-val" id="dbz-vol-val">35%</span>
+        </div>
+        <div class="buzzer-controls">
+          <label>Tone</label>
+          <input type="range" id="dbz-freq" min="400" max="1600" step="20" value="880"/>
+          <span class="range-val" id="dbz-freq-val">880Hz</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel" id="panel-log" style="flex:1;min-height:0">
+      <div class="panel-title">
+        Frame Log
+        <span style="display:flex;align-items:center;gap:8px">
+          <span class="tag" id="log-pause-tag" style="display:none">⏸ PAUSED</span>
+          <button class="log-clr-btn" id="log-clear">[ CLR ]</button>
+        </span>
+      </div>
+      <div class="panel-body" style="display:flex;flex-direction:column;min-height:0">
+        <div id="log-wrap" style="flex:1;overflow-y:auto">
+          <table id="log-table">
+            <thead>
+              <tr>
+                <th style="width:88px">Timestamp</th>
+                <th style="width:62px">Frame</th>
+                <th style="width:58px">EAR</th>
+                <th style="width:52px">Closed</th>
+                <th style="width:76px">State</th>
+                <th>Event</th>
+              </tr>
+            </thead>
+            <tbody id="log-body"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+  // Backend endpoints and auth.
+  const BACKEND   = `${location.protocol}//${location.hostname}:8000`;
+  const WS_URL    = `${location.protocol==='https:'?'wss':'ws'}://${location.hostname}:8000/ws/video`;
+  const API_TOKEN = "";
+  let drowsyFramesMax = 10;
+
+  const authH = () => API_TOKEN ? {"X-API-Key": API_TOKEN} : {};
+
+  const $  = id => document.getElementById(id);
+  const video      = $("video");
+  const dbgFrame   = $("debug-frame");
+  const prevNote   = $("preview-note");
+  const stateBadge = $("state-badge");
+  const badgeText  = $("badge-text");
+  const hdrFrames  = $("hdr-frames");
+  const hdrDrops   = $("hdr-drops");
+  const hdrUptime  = $("hdr-uptime");
+  const statusTag  = $("status-tag");
+  const camTag     = $("cam-tag");
+  const earBig     = $("ear-big");
+  const earSub     = $("ear-sub");
+  const dbzInd     = $("dbz-indicator");
+  const dbzEnable  = $("dbz-enable");
+  const dbzVol     = $("dbz-vol");
+  const dbzVolVal  = $("dbz-vol-val");
+  const dbzFreq    = $("dbz-freq");
+  const dbzFreqVal = $("dbz-freq-val");
+  const logWrap    = $("log-wrap");
+  const logBody    = $("log-body");
+  const logPauseTag= $("log-pause-tag");
+
+  let mode         = "debug";
+  let ws           = null;
+  let stream       = null;
+  let sendTimer    = null;
+  let debugTimer   = null;
+  let lastState    = "OFFLINE";
+  let lastFrameRx  = 0;
+  let logPaused    = false;
+  let debugFrUrl   = null;
+  let startMs      = Date.now();
+
+  // Header uptime ticker.
+  setInterval(() => {
+    const s = Math.floor((Date.now() - startMs) / 1000);
+    const h = String(Math.floor(s/3600)).padStart(2,'0');
+    const m = String(Math.floor((s%3600)/60)).padStart(2,'0');
+    const ss= String(s%60).padStart(2,'0');
+    hdrUptime.textContent = `${h}:${m}:${ss}`;
+  }, 1000);
+
+  // Debug buzzer simulator (laptop speaker).
+  const DBZ = {
+    ctx: null, timer: null, enabled: true,
+    freq: 880, beepOn: 180, beepOff: 220, gain: 0.35,
+    _ctx() {
+      if (!this.ctx) this.ctx = new (window.AudioContext||window.webkitAudioContext)();
+      if (this.ctx.state==="suspended") this.ctx.resume();
+      return this.ctx;
+    },
+    _beep() {
+      if (!this.enabled) return;
+      const ctx=this._ctx(), osc=ctx.createOscillator(), g=ctx.createGain();
+      osc.connect(g); g.connect(ctx.destination);
+      osc.type="square"; osc.frequency.value=this.freq;
+      g.gain.value=this.gain;
+      const t=ctx.currentTime, d=this.beepOn/1000;
+      osc.start(t);
+      g.gain.setValueAtTime(this.gain, t+d-0.01);
+      g.gain.linearRampToValueAtTime(0, t+d);
+      osc.stop(t+d);
+    },
+    start() {
+      if (this.timer!==null) return;
+      this._beep();
+      this.timer=setInterval(()=>this._beep(), this.beepOn+this.beepOff);
+      dbzInd.textContent="▶ BEEPING"; dbzInd.classList.add("active");
+      sysLog("Debug buzzer: ACTIVE");
+    },
+    stop() {
+      if (this.timer===null) return;
+      clearInterval(this.timer); this.timer=null;
+      dbzInd.textContent="◼ SILENT"; dbzInd.classList.remove("active");
+      sysLog("Debug buzzer: stopped");
+    },
+  };
+  dbzEnable.onchange = () => { DBZ.enabled=dbzEnable.checked; if(!DBZ.enabled) DBZ.stop(); };
+  dbzVol.oninput = () => { DBZ.gain=parseFloat(dbzVol.value); dbzVolVal.textContent=Math.round(dbzVol.value*100)+"%"; };
+  dbzFreq.oninput = () => { DBZ.freq=parseInt(dbzFreq.value); dbzFreqVal.textContent=dbzFreq.value+"Hz"; };
+
+  logWrap.onmouseenter = () => { logPaused=true;  logPauseTag.style.display=""; };
+  logWrap.onmouseleave = () => { logPaused=false; logPauseTag.style.display="none"; scrollLog(); };
+  $("log-clear").onclick = () => { logBody.innerHTML=""; lastFrameRx=0; };
+
+  function scrollLog() { if (!logPaused) logWrap.scrollTop=logWrap.scrollHeight; }
+
+  function logFrame(frameNum, status, event) {
+    const now = new Date();
+    const ts  = now.toLocaleTimeString("en-GB",{hour12:false})+"."+String(now.getMilliseconds()).padStart(3,"0");
+    const ear  = status.ear_current!=null ? status.ear_current.toFixed(3) : "—";
+    const cf   = status.closed_frames??'—';
+    const st   = status.state||"—";
+    const drowsy = st==="DROWSY";
+
+    const tr = document.createElement("tr");
+    tr.className = event ? "row-event" : (drowsy ? "row-drowsy" : "");
+
+    tr.innerHTML =
+      `<td class="td-time">${ts}</td>`+
+      `<td class="td-frame">#${frameNum}</td>`+
+      `<td class="td-ear">${ear}</td>`+
+      `<td>${cf}</td>`+
+      `<td class="${drowsy?'td-state-drowsy':'td-state-normal'}">${st}</td>`+
+      `<td class="td-event">${event||""}</td>`;
+
+    logBody.appendChild(tr);
+    while (logBody.rows.length > 300) logBody.deleteRow(0);
+    scrollLog();
+  }
+
+  function sysLog(msg) {
+    const now = new Date();
+    const ts  = now.toLocaleTimeString("en-GB",{hour12:false})+"."+String(now.getMilliseconds()).padStart(3,"0");
+    const tr  = document.createElement("tr");
+    tr.className = "row-sys";
+    tr.innerHTML = `<td class="td-time">${ts}</td><td colspan="5" style="color:var(--fg-dim);font-style:italic">${msg}</td>`;
+    logBody.appendChild(tr);
+    while (logBody.rows.length > 300) logBody.deleteRow(0);
+    scrollLog();
+  }
+
+  function setStateBadge(st) {
+    stateBadge.className = "";
+    if      (st==="DROWSY")  { stateBadge.classList.add("drowsy");  badgeText.textContent="DROWSY";  statusTag.textContent="DROWSY"; statusTag.style.color="var(--red)"; }
+    else if (st==="NORMAL")  { stateBadge.classList.add("normal");  badgeText.textContent="NORMAL";  statusTag.textContent="NORMAL"; statusTag.style.color="var(--green)"; }
+    else                     { stateBadge.classList.add("offline"); badgeText.textContent="OFFLINE"; statusTag.textContent="OFFLINE"; statusTag.style.color="var(--fg-dim)"; }
+  }
+
+  function updateGauges(status, metrics) {
+    const ear = status.ear_current??null;
+    const cf  = status.closed_frames??0;
+
+    if (ear!==null) {
+      earBig.textContent = ear.toFixed(3);
+      earBig.className = ear < 0.25 ? "crit" : ear < 0.28 ? "warn" : "";
+    } else {
+      earBig.textContent = "—.———";
+      earBig.className = "";
+    }
+
+    const earPct = ear!==null ? Math.min(100, (ear/0.4)*100) : 0;
+    const earBar = $("gauge-ear");
+    earBar.style.width = earPct+"%";
+    earBar.className   = "gauge-bar" + (ear!==null && ear<0.25 ? " crit" : ear!==null && ear<0.28 ? " warn" : "");
+    $("gv-ear").textContent = ear!==null ? ear.toFixed(3) : "—";
+
+    const cfPct = Math.min(100, (cf/drowsyFramesMax)*100);
+    const cfBar = $("gauge-cf");
+    cfBar.style.width = cfPct+"%";
+    cfBar.className   = "gauge-bar" + (cfPct>80?" crit":cfPct>50?" warn":"");
+    $("gv-cf").textContent = `${cf}/${drowsyFramesMax}`;
+
+    const st = status.state||"—";
+    $("kv-state").textContent = st;
+    $("kv-state").className   = "v " + (st==="DROWSY"?"red": st==="NORMAL"?"green":"");
+    $("kv-alert").textContent = status.alert_active ? "YES" : "NO";
+    $("kv-alert").className   = "v " + (status.alert_active?"red":"");
+
+    const rx   = metrics.frame_rx_total??0;
+    const fail = metrics.frame_decode_fail_total??0;
+    const enq  = metrics.frame_enqueue_total??0;
+    $("kv-rx").textContent   = rx;
+    $("kv-fail").textContent = fail;
+    $("kv-fail").className   = "v " + (fail>0?"red":"green");
+    $("kv-enq").textContent  = enq;
+    hdrFrames.textContent    = rx;
+    hdrDrops.textContent     = rx>0 ? Math.round((fail/rx)*100)+"%" : "0%";
+
+    const lf = metrics.last_frame_ms||0;
+    if (lf) {
+      const age = ((Date.now()-lf)/1000).toFixed(1);
+      $("kv-last").textContent = age+"s ago";
+      $("kv-last").className   = "v " + (parseFloat(age)>3?"red":"green");
+    } else {
+      $("kv-last").textContent = "—";
+      $("kv-last").className   = "v";
+    }
+
+    // Fail rate and worker from /metrics (extended by health data in poll).
+    const fr = metrics.decode_fail_rate??null;
+    if (fr !== null) {
+      $("kv-failrate").textContent = (fr*100).toFixed(1)+"%";
+      $("kv-failrate").className   = "v " + (fr>0.3?"red":fr>0.1?"amber":"green");
+    }
+    if (metrics.worker_alive !== undefined) {
+      $("kv-worker").textContent = metrics.worker_alive ? "ALIVE" : "DEAD";
+      $("kv-worker").className   = "v " + (metrics.worker_alive?"green":"red");
+    }
+  }
+
+  async function poll() {
+    try {
+      const [sRes, mRes] = await Promise.all([
+        fetch(`${BACKEND}/status`,  {headers:authH()}),
+        fetch(`${BACKEND}/metrics`, {headers:authH()}),
+      ]);
+      if (!sRes.ok) throw new Error("status "+sRes.status);
+      const status  = await sRes.json();
+      const metrics = mRes.ok ? await mRes.json() : {};
+
+      setStateBadge(status.state);
+      updateGauges(status, metrics);
+
+      let event = "";
+      if (status.state==="DROWSY" && lastState!=="DROWSY") { DBZ.start(); event="⚠ DROWSY ONSET"; }
+      else if (status.state!=="DROWSY" && lastState==="DROWSY") { DBZ.stop(); event="✓ RECOVERED"; }
+      lastState = status.state;
+
+      const rxNow    = metrics.frame_rx_total||0;
+      const newFrames = rxNow - lastFrameRx;
+      if (newFrames > 0) {
+        const cap = Math.min(newFrames, 10);
+        for (let i=0; i<cap; i++) {
+          logFrame(lastFrameRx+i+1, status, i===cap-1 ? event : "");
+        }
+        lastFrameRx = rxNow;
+      } else if (event) {
+        logFrame(rxNow, status, event);
+      }
+
+    } catch(e) {
+      setStateBadge("OFFLINE");
+      DBZ.stop();
+      if (lastState !== "OFFLINE") sysLog("Backend unreachable: "+e.message);
+      lastState = "OFFLINE";
+    }
+  }
+
+  // Poll /health separately and merge into metrics display.
+  async function pollHealth() {
+    try {
+      const res = await fetch(`${BACKEND}/health`, {headers:authH()});
+      if (!res.ok) return;
+      const h = await res.json();
+      if ($("kv-worker")) {
+        $("kv-worker").textContent = h.worker_alive ? "ALIVE" : "DEAD";
+        $("kv-worker").className   = "v " + (h.worker_alive?"green":"red");
+      }
+      if ($("kv-failrate")) {
+        const fr = h.decode_fail_rate||0;
+        $("kv-failrate").textContent = (fr*100).toFixed(1)+"%";
+        $("kv-failrate").className   = "v " + (fr>0.3?"red":fr>0.1?"amber":"green");
+      }
+      // Surface health warnings in syslog.
+      if (h.stalled)   sysLog("⚠ Pipeline stalled — no frame in 5s");
+      if (h.degraded)  sysLog("⚠ Decode fail rate high: "+(h.decode_fail_rate*100).toFixed(0)+"%");
+      if (!h.worker_alive) sysLog("✖ CV worker is not running");
+    } catch {}
+  }
+
+  async function loadRuntimeConfig() {
+    try {
+      const res = await fetch(`${BACKEND}/config`, {headers:authH()});
+      if (!res.ok) return;
+      const cfg = await res.json();
+      const n = cfg?.detection?.drowsy_frames;
+      if (typeof n === "number" && n > 0 && n < 100) {
+        drowsyFramesMax = n;
+      }
+    } catch {}
+  }
+
+  // UI mode switching between virtual webcam and ESP32 debug frame.
+  function setMode(m) {
+    mode = m;
+    $("mode-virtual").classList.toggle("active", m==="virtual");
+    $("mode-debug").classList.toggle("active",   m==="debug");
+    if (m==="virtual") {
+      video.style.display="block"; dbgFrame.style.display="none";
+      prevNote.textContent="Virtual mode: laptop webcam → backend";
+      stopDebugPull();
+    } else {
+      video.style.display="none"; dbgFrame.style.display="block";
+      prevNote.textContent="ESP32 debug mode — processed frame from backend";
+      stopVirtual(); startDebugPull();
+    }
+  }
+
+  // Pull processed frame image from backend in debug mode.
+  function startDebugPull() {
+    if (debugTimer) return;
+    debugTimer = setInterval(async () => {
+      try {
+        const res = await fetch(`${BACKEND}/debug/frame.jpg?t=${Date.now()}`, {headers:authH()});
+        if (!res.ok) return;
+        const blob = await res.blob();
+        if (debugFrUrl) URL.revokeObjectURL(debugFrUrl);
+        debugFrUrl = URL.createObjectURL(blob);
+        dbgFrame.src = debugFrUrl;
+      } catch {}
+    }, 250);
+  }
+  function stopDebugPull() { clearInterval(debugTimer); debugTimer=null; }
+
+  // Virtual mode stream path: webcam -> WS -> backend.
+  function startWS() {
+    if (ws && ws.readyState===WebSocket.OPEN) return;
+    ws = new WebSocket(WS_URL);
+    ws.onopen  = () => { sysLog("WS connected"); };
+    ws.onclose = () => { sysLog("WS disconnected"); };
+  }
+
+  function startFrameSender() {
+    if (sendTimer) return;
+    const canvas=document.createElement("canvas");
+    const ctx=canvas.getContext("2d");
+    sendTimer = setInterval(() => {
+      if (!ws || ws.readyState!==WebSocket.OPEN || !video.videoWidth) return;
+      canvas.width=video.videoWidth; canvas.height=video.videoHeight;
+      ctx.drawImage(video,0,0);
+      const d=canvas.toDataURL("image/jpeg").split(",")[1];
+      if(d) ws.send(d);
+    }, 100);
+  }
+
+  async function startVirtual() {
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({video:true});
+      video.srcObject = stream;
+      startWS(); startFrameSender();
+      sysLog("Virtual camera started");
+    } catch(e) { sysLog("Camera error: "+e); }
+  }
+
+  function stopVirtual() {
+    clearInterval(sendTimer); sendTimer=null;
+    if (ws) { ws.close(); ws=null; }
+    if (stream) { stream.getTracks().forEach(t=>t.stop()); stream=null; }
+  }
+
+  $("mode-virtual").onclick  = () => setMode("virtual");
+  $("mode-debug").onclick    = () => setMode("debug");
+  $("start-virtual").onclick = () => startVirtual();
+  $("stop-virtual").onclick  = () => { stopVirtual(); sysLog("Virtual camera stopped"); };
+
+  document.body.addEventListener("click", () => DBZ._ctx(), {once:true});
+
+  setMode("debug");
+  loadRuntimeConfig().finally(() => {
+    poll();
+    pollHealth();
+    setInterval(poll, 1000);
+    setInterval(pollHealth, 5000);
+  });
+</script>
+</body>
 </html>

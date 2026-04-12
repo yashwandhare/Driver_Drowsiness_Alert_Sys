@@ -1,0 +1,31 @@
+{
+  "camera": {
+    "model": "OV3660",
+    "stream_format": "MJPEG",
+    "target_fps": 4,
+    "frame_size": "QVGA",
+    "jpeg_quality": 18,
+    "xclk_hz": 20000000
+  },
+  "network": {
+    "server_host": "10.96.37.243",
+    "backend_port": 8000,
+    "frontend_port": 5500,
+    "status_poll_ms": 2000,
+    "frame_interval_ms": 260,
+    "api_token": ""
+  },
+  "detection": {
+    "ear_close_threshold": 0.21,
+    "ear_open_threshold":  0.24,
+    "drowsy_frames": 3,
+    "show_display": false
+  },
+  "alerts": {
+    "buzzer_gpio": 13,
+    "status_led_gpio": 4,
+    "drowsy_blink_ms": 120,
+    "connected_led_mode": "heartbeat",
+    "disconnected_led_mode": "off"
+  }
+}
