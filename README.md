@@ -3,7 +3,7 @@ AI based driver drowsiness detection and alert system built using ESP32 with OV3
 The system monitors the driver’s eyes, detects prolonged eye closure, and triggers visual and audible alerts to indicate drowsiness.
 
 #### Tech Stack
-- ESP32-CAM (OV3360)  
+- ESP32-CAM (OV3660)  
 - Python  
 - OpenCV  
 - MediaPipe  

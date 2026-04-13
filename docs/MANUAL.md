@@ -2,9 +2,10 @@
 
 ## What This Project Does
 
-- ESP32-CAM captures JPEG frames (10-12 FPS target).
-- Laptop server runs MediaPipe landmark-based drowsiness detection.
-- ESP32 polls server state and drives alerts:
+- ESP32-CAM captures JPEG frames and sends them to the backend.
+- Laptop server runs MediaPipe-based drowsiness detection.
+- Detection state is returned to ESP32 in the response header.
+- ESP32 drives alerts based on the state:
   - Flash LED OFF when server disconnected
   - Flash LED solid ON when connected
   - Flash LED fast blink when `DROWSY`
@@ -14,7 +15,7 @@
 
 ```text
 ESP32-CAM (OV3660) --POST /frame--> FastAPI server
-ESP32-CAM <--GET /status-- FastAPI server
+                   <--X-Drowsy-State header in response--
 ```
 
 ## Repository Layout
@@ -40,8 +41,8 @@ ESP32-CAM <--GET /status-- FastAPI server
    - Keep `ENABLE_BUZZER = false` for laptop USB testing
    - Upload firmware
 6. Power ESP32-CAM and open Serial Monitor at `115200`.
-7. Confirm logs show Wi-Fi connected and frame/status requests working.
-8. Verify backend `/status` changes and LED behavior:
+7. Confirm logs show Wi-Fi connected and frames being sent.
+8. Verify detection and LED behavior:
    - connected normal: solid ON
    - drowsy: fast blink
 9. After stable test, optionally set `ENABLE_BUZZER = true` and connect buzzer physically.

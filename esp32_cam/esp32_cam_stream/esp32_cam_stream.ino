@@ -2,32 +2,29 @@
 #include <WiFi.h>
 #include "esp_camera.h"
 
-/* ESP32-CAM firmware for the drowsiness alert system. */
+const char* WIFI_SSID     = "Bhakarwadi";
+const char* WIFI_PASSWORD = "abcdefgh";
+const char* SERVER_HOST   = "10.96.37.243";
+const int   SERVER_PORT   = 8000;
+const char* API_TOKEN     = "";
+const bool  ENABLE_BUZZER = true;
 
-const char* WIFI_SSID       = "Bhakarwadi";
-const char* WIFI_PASSWORD   = "abcdefgh";
-const char* SERVER_HOST     = "10.96.37.243";
-const int   SERVER_PORT     = 8000;
-const char* API_TOKEN       = "";
-const bool  ENABLE_BUZZER   = false;
+#define BUZZER_PIN            13
+#define STATUS_LED_PIN         4
 
-#define BUZZER_PIN          13
-#define STATUS_LED_PIN       4
+#define FRAME_INTERVAL_MS     30
+#define CONNECT_TIMEOUT_MS   600
+#define READ_TIMEOUT_MS      800
+#define RESPONSE_TIMEOUT_MS 1200
+#define WIFI_SETTLE_MS       800
+#define SERVER_TIMEOUT_MS   5000
 
-#define FRAME_INTERVAL_MS   135
-#define FRAME_MIN_MS        110
-#define FRAME_MAX_MS        300
-#define STATUS_POLL_MS     4000
-#define CONNECT_TIMEOUT_MS  800
-#define READ_TIMEOUT_MS     900
-#define WIFI_SETTLE_MS     1500
-#define SERVER_TIMEOUT_MS  8000
-#define FAIL_THRESHOLD        6
-#define BACKOFF_MS          600
+#define MAX_RETRIES            2
+#define RETRY_BASE_MS        120
 
-#define LED_HB_ON_MS         12
-#define LED_HB_OFF_MS      2988
-#define LED_DROWSY_MS       120
+#define LED_HB_ON_MS          12
+#define LED_HB_OFF_MS       2988
+#define LED_DROWSY_MS        120
 
 #define PWDN_GPIO_NUM    32
 #define RESET_GPIO_NUM   -1
@@ -46,27 +43,28 @@ const bool  ENABLE_BUZZER   = false;
 #define HREF_GPIO_NUM    23
 #define PCLK_GPIO_NUM    22
 
-String        frameUrl, statusUrl;
-WiFiClient    frameConn;
 bool          serverConnected   = false;
 bool          isDrowsy          = false;
 bool          wifiBeginIssued   = false;
 bool          wifiSettled       = false;
 bool          ledOn             = false;
 bool          heartbeatPhaseOn  = false;
+bool          sendBusy          = false;
 wl_status_t   lastWiFiStatus    = WL_IDLE_STATUS;
 unsigned long wifiConnectedAt   = 0;
 unsigned long lastFrameMs       = 0;
-unsigned long lastStatusMs      = 0;
 unsigned long lastServerOkMs    = 0;
 unsigned long lastWiFiAttemptMs = 0;
 unsigned long lastHeartbeatMs   = 0;
 unsigned long lastBlinkMs       = 0;
-unsigned long backoffUntilMs    = 0;
+unsigned long nextSendAllowedMs = 0;
 unsigned long lastLogMs         = 0;
-int           consecutiveFails  = 0;
+int           retryAttempt      = 0;
 int           captureFailStreak = 0;
-int           frameIntervalMs   = FRAME_INTERVAL_MS;
+
+// Persistent HTTP connection (keep-alive).
+WiFiClient persistClient;
+bool       persistValid = false;
 
 void led(bool on) {
   digitalWrite(STATUS_LED_PIN, on ? HIGH : LOW);
@@ -79,17 +77,48 @@ void buzzer(bool on) {
 
 void logNet(const char* tag, int code) {
   unsigned long now = millis();
-  if (now - lastLogMs < 3000) return;
+  if (now - lastLogMs < 800) return;
   lastLogMs = now;
-  Serial.printf("%s %d  fails=%d\n", tag, code, consecutiveFails);
+  Serial.printf("%s %d retry=%d\n", tag, code, retryAttempt);
 }
 
-bool parseStateToken(const String& s, bool* out) {
-  if (s.indexOf("DROWSY") >= 0) {
+int readLine(WiFiClient& client, char* buf, int bufSize, unsigned long deadlineMs) {
+  int pos = 0;
+  while (millis() < deadlineMs) {
+    if (client.available()) {
+      char c = client.read();
+      if (c == '\n') {
+        if (pos > 0 && buf[pos - 1] == '\r') pos--;
+        buf[pos] = '\0';
+        return pos;
+      }
+      if (pos < bufSize - 1) {
+        buf[pos++] = c;
+      }
+    } else {
+      if (!client.connected()) break;
+      delay(1);
+    }
+  }
+  buf[pos] = '\0';
+  return (pos > 0) ? pos : -1;
+}
+
+bool startsWithCI(const char* str, const char* prefix) {
+  while (*prefix) {
+    if (tolower((unsigned char)*str) != tolower((unsigned char)*prefix)) return false;
+    str++;
+    prefix++;
+  }
+  return true;
+}
+
+bool parseStateFromBuf(const char* buf, bool* out) {
+  if (strstr(buf, "DROWSY")) {
     *out = true;
     return true;
   }
-  if (s.indexOf("NORMAL") >= 0) {
+  if (strstr(buf, "NORMAL")) {
     *out = false;
     return true;
   }
@@ -97,68 +126,63 @@ bool parseStateToken(const String& s, bool* out) {
 }
 
 bool readHttpStateFromClient(WiFiClient& client, int* statusCode, bool* stateSeen, bool* stateValue) {
-  String statusLine = client.readStringUntil('\n');
-  statusLine.trim();
-  if (!statusLine.startsWith("HTTP/1.")) {
+  unsigned long deadline = millis() + RESPONSE_TIMEOUT_MS;
+  char lineBuf[256];
+
+  // Read status line.
+  int len = readLine(client, lineBuf, sizeof(lineBuf), deadline);
+  if (len < 0 || strncmp(lineBuf, "HTTP/1.", 7) != 0) {
     *statusCode = -11;
     return false;
   }
 
-  int firstSp = statusLine.indexOf(' ');
-  int secondSp = statusLine.indexOf(' ', firstSp + 1);
-  if (firstSp < 0 || secondSp < 0) {
-    *statusCode = -11;
-    return false;
-  }
-
-  *statusCode = statusLine.substring(firstSp + 1, secondSp).toInt();
+  char* sp1 = strchr(lineBuf, ' ');
+  if (!sp1) { *statusCode = -11; return false; }
+  *statusCode = atoi(sp1 + 1);
 
   int contentLength = -1;
 
-  while (client.connected()) {
-    String line = client.readStringUntil('\n');
-    line.trim();
-    if (line.length() == 0) break;
+  while (millis() < deadline) {
+    len = readLine(client, lineBuf, sizeof(lineBuf), deadline);
+    if (len <= 0) break;
 
-    int colon = line.indexOf(':');
-    if (colon > 0) {
-      String key = line.substring(0, colon);
-      String val = line.substring(colon + 1);
-      key.trim();
-      val.trim();
-      key.toLowerCase();
-      if (key == "content-length") {
-        contentLength = val.toInt();
-      }
-      if (key == "x-drowsy-state") {
-        bool parsed = false;
-        bool stateVal = false;
-        parsed = parseStateToken(val, &stateVal);
-        if (parsed) {
-          *stateSeen = true;
-          *stateValue = stateVal;
-        }
+    char* colon = strchr(lineBuf, ':');
+    if (!colon) continue;
+
+    *colon = '\0';
+    char* key = lineBuf;
+    char* val = colon + 1;
+    while (*val == ' ') val++;
+
+    if (strcasecmp(key, "content-length") == 0) {
+      contentLength = atoi(val);
+    } else if (strcasecmp(key, "x-drowsy-state") == 0) {
+      bool stateVal = false;
+      if (parseStateFromBuf(val, &stateVal)) {
+        *stateSeen = true;
+        *stateValue = stateVal;
       }
     }
   }
 
-  String body;
-  unsigned long start = millis();
-  while ((millis() - start) < READ_TIMEOUT_MS) {
-    while (client.available()) {
-      body += (char)client.read();
-      if (contentLength >= 0 && (int)body.length() >= contentLength) {
-        break;
-      }
-    }
-    if (contentLength >= 0 && (int)body.length() >= contentLength) break;
-    if (!client.connected()) break;
-    delay(1);
-  }
+  char bodyBuf[128];
+  int bodyPos = 0;
+  int bodyLimit = (contentLength >= 0 && contentLength < (int)sizeof(bodyBuf))
+                  ? contentLength : (int)sizeof(bodyBuf) - 1;
 
-  if (!*stateSeen && body.length() > 0) {
+  while (millis() < deadline && bodyPos < bodyLimit) {
+    if (client.available()) {
+      bodyBuf[bodyPos++] = client.read();
+    } else {
+      if (!client.connected()) break;
+      delay(1);
+    }
+  }
+  bodyBuf[bodyPos] = '\0';
+
+  if (!*stateSeen && bodyPos > 0) {
     bool stateVal = false;
-    if (parseStateToken(body, &stateVal)) {
+    if (parseStateFromBuf(bodyBuf, &stateVal)) {
       *stateSeen = true;
       *stateValue = stateVal;
     }
@@ -167,23 +191,7 @@ bool readHttpStateFromClient(WiFiClient& client, int* statusCode, bool* stateSee
   return true;
 }
 
-void closeFrameConn() {
-  if (frameConn.connected()) {
-    frameConn.stop();
-  }
-}
-
-bool ensureFrameConn() {
-  if (frameConn.connected()) return true;
-  frameConn.setNoDelay(true);
-  frameConn.setTimeout(READ_TIMEOUT_MS);
-  return frameConn.connect(SERVER_HOST, SERVER_PORT, CONNECT_TIMEOUT_MS);
-}
-
-// ── Camera ────────────────────────────────────────────────────────────────────
-
 bool cameraInit() {
-  // Power-cycle sensor to clear stale I2C state on warm boot.
   pinMode(PWDN_GPIO_NUM, OUTPUT);
   digitalWrite(PWDN_GPIO_NUM, HIGH); delay(10);
   digitalWrite(PWDN_GPIO_NUM, LOW);  delay(10);
@@ -198,39 +206,42 @@ bool cameraInit() {
   c.pin_xclk = XCLK_GPIO_NUM; c.pin_pclk  = PCLK_GPIO_NUM;
   c.pin_vsync = VSYNC_GPIO_NUM; c.pin_href = HREF_GPIO_NUM;
   c.pin_sccb_sda = SIOD_GPIO_NUM; c.pin_sccb_scl = SIOC_GPIO_NUM;
-  c.pin_pwdn = PWDN_GPIO_NUM;  c.pin_reset = RESET_GPIO_NUM;
+  c.pin_pwdn = PWDN_GPIO_NUM; c.pin_reset = RESET_GPIO_NUM;
   c.xclk_freq_hz = 20000000;
   c.pixel_format = PIXFORMAT_JPEG;
-  c.frame_size   = FRAMESIZE_QVGA;  // 320×240 — small payload, enough for EAR
-  c.jpeg_quality = 15;               // 10–20: lower = larger file, higher quality
-  c.fb_count     = 1;
-  c.grab_mode    = CAMERA_GRAB_WHEN_EMPTY;  // DMA only runs on fb_get()
+  c.frame_size   = FRAMESIZE_QVGA;
+  c.jpeg_quality = 11;
+  c.fb_count     = psramFound() ? 2 : 1;
+  c.grab_mode    = psramFound() ? CAMERA_GRAB_LATEST : CAMERA_GRAB_WHEN_EMPTY;
   c.fb_location  = psramFound() ? CAMERA_FB_IN_PSRAM : CAMERA_FB_IN_DRAM;
 
-  if (esp_camera_init(&c) != ESP_OK) { Serial.println("Camera init failed"); return false; }
+  if (esp_camera_init(&c) != ESP_OK) {
+    Serial.println("Camera init failed");
+    return false;
+  }
 
   sensor_t* s = esp_camera_sensor_get();
-  if (!s) { Serial.println("Sensor null"); esp_camera_deinit(); return false; }
+  if (!s) {
+    Serial.println("Sensor null");
+    esp_camera_deinit();
+    return false;
+  }
 
   if (s->id.PID == OV3660_PID) {
     s->set_vflip(s, 1);
     s->set_brightness(s, 0);
     s->set_contrast(s, 1);
     s->set_saturation(s, 0);
-    s->set_sharpness(s, 0);
     s->set_denoise(s, 2);
-    s->set_special_effect(s, 0);
-    s->set_lenc(s, 0);
     s->set_gain_ctrl(s, 1);
-    s->set_agc_gain(s, 8);
     s->set_framesize(s, FRAMESIZE_QVGA);
-    s->set_quality(s, 15);
+    s->set_quality(s, 11);
   }
-  Serial.println("Camera ready");
+
+  Serial.printf("Camera ready (PSRAM: %s, fb_count: %d)\n",
+                psramFound() ? "yes" : "no", c.fb_count);
   return true;
 }
-
-// ── WiFi ──────────────────────────────────────────────────────────────────────
 
 void wifiMaintain() {
   wl_status_t status = WiFi.status();
@@ -239,18 +250,19 @@ void wifiMaintain() {
     lastWiFiStatus = status;
     if (status == WL_CONNECTED) {
       wifiConnectedAt = millis();
-      wifiSettled     = false;
+      wifiSettled = false;
       Serial.printf("WiFi up: %s\n", WiFi.localIP().toString().c_str());
     } else {
       wifiSettled = false;
-      closeFrameConn();
+      retryAttempt = 0;
     }
   }
 
   if (status == WL_CONNECTED) {
     if (!wifiSettled && millis() - wifiConnectedAt >= WIFI_SETTLE_MS) {
       wifiSettled = true;
-      Serial.printf("Ready — sending to http://%s:%d\n", SERVER_HOST, SERVER_PORT);
+      nextSendAllowedMs = millis();
+      Serial.printf("Ready POST -> http://%s:%d/frame\n", SERVER_HOST, SERVER_PORT);
     }
     return;
   }
@@ -259,16 +271,16 @@ void wifiMaintain() {
   if (!wifiBeginIssued) {
     WiFi.mode(WIFI_STA);
     WiFi.setSleep(false);
-    WiFi.setTxPower(WIFI_POWER_19_5dBm);
+    WiFi.setTxPower(WIFI_POWER_13dBm);
     WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-    wifiBeginIssued   = true;
+    wifiBeginIssued = true;
     lastWiFiAttemptMs = now;
     Serial.println("WiFi connecting");
     return;
   }
 
-  bool terminal = (status == WL_DISCONNECTED || status == WL_CONNECT_FAILED
-               ||  status == WL_NO_SSID_AVAIL || status == WL_CONNECTION_LOST);
+  bool terminal = (status == WL_DISCONNECTED || status == WL_CONNECT_FAILED ||
+                   status == WL_NO_SSID_AVAIL || status == WL_CONNECTION_LOST);
   if (!terminal || now - lastWiFiAttemptMs < 5000) return;
 
   lastWiFiAttemptMs = now;
@@ -276,113 +288,137 @@ void wifiMaintain() {
   Serial.println("WiFi reconnect");
 }
 
-// ── Frame upload ──────────────────────────────────────────────────────────────
-
-bool sendFrame() {
+bool sendFrameOnce(int* outCode) {
   camera_fb_t* fb = esp_camera_fb_get();
   if (!fb) {
     if (++captureFailStreak >= 5) {
       captureFailStreak = 0;
       Serial.println("Camera restart");
       esp_camera_deinit();
-      delay(100);
+      delay(80);
       cameraInit();
     }
+    *outCode = -21;
     return false;
   }
   captureFailStreak = 0;
 
-  bool ok = false;
-  int code = -1;
+  size_t frameLen = fb->len;
 
-  for (int attempt = 0; attempt < 2 && !ok; attempt++) {
-    if (!ensureFrameConn()) {
-      code = -1;
-      closeFrameConn();
-      continue;
-    }
-
-    frameConn.printf("POST /frame HTTP/1.1\r\n");
-    frameConn.printf("Host: %s:%d\r\n", SERVER_HOST, SERVER_PORT);
-    frameConn.printf("Content-Type: image/jpeg\r\n");
-    frameConn.printf("Content-Length: %u\r\n", (unsigned)fb->len);
-    if (strlen(API_TOKEN) > 0) {
-      frameConn.printf("X-API-Key: %s\r\n", API_TOKEN);
-    }
-    frameConn.printf("Connection: keep-alive\r\n\r\n");
-
-    size_t sent = frameConn.write(fb->buf, fb->len);
-    if (sent != fb->len) {
-      code = -3;
-      closeFrameConn();
-      continue;
-    }
-
-    bool stateSeen = false;
-    bool stateVal = false;
-    if (!readHttpStateFromClient(frameConn, &code, &stateSeen, &stateVal)) {
-      closeFrameConn();
-      continue;
-    }
-
-    if (stateSeen) {
-      isDrowsy = stateVal;
-    }
-
-    ok = (code == 200 || code == 204);
-    if (!ok) {
-      closeFrameConn();
+  bool reused = persistValid && persistClient.connected();
+  if (!reused) {
+    persistClient.stop();
+    persistValid = false;
+    persistClient.setNoDelay(true);
+    persistClient.setTimeout(READ_TIMEOUT_MS);
+    if (!persistClient.connect(SERVER_HOST, SERVER_PORT, CONNECT_TIMEOUT_MS)) {
+      esp_camera_fb_return(fb);
+      *outCode = -1;
+      return false;
     }
   }
 
-  if (!ok) logNet("Frame", code);
-
-  esp_camera_fb_return(fb);
-  return ok;
-}
-
-// ── Status poll ───────────────────────────────────────────────────────────────
-// Fallback for when frame response header is missing (e.g. network blip).
-
-bool pollStatus() {
-  int code = -1;
-  WiFiClient client;
-  client.setTimeout(READ_TIMEOUT_MS);
-  if (!client.connect(SERVER_HOST, SERVER_PORT, CONNECT_TIMEOUT_MS)) {
-    logNet("Status", -1);
+  char hdr[320];
+  int hlen;
+  if (strlen(API_TOKEN) > 0) {
+    hlen = snprintf(hdr, sizeof(hdr),
+      "POST /frame HTTP/1.1\r\n"
+      "Host: %s:%d\r\n"
+      "Content-Type: image/jpeg\r\n"
+      "Content-Length: %u\r\n"
+      "X-API-Key: %s\r\n"
+      "Connection: keep-alive\r\n\r\n",
+      SERVER_HOST, SERVER_PORT, (unsigned)frameLen, API_TOKEN);
+  } else {
+    hlen = snprintf(hdr, sizeof(hdr),
+      "POST /frame HTTP/1.1\r\n"
+      "Host: %s:%d\r\n"
+      "Content-Type: image/jpeg\r\n"
+      "Content-Length: %u\r\n"
+      "Connection: keep-alive\r\n\r\n",
+      SERVER_HOST, SERVER_PORT, (unsigned)frameLen);
+  }
+  if (persistClient.write((uint8_t*)hdr, hlen) != (size_t)hlen) {
+    persistClient.stop();
+    persistValid = false;
+    esp_camera_fb_return(fb);
+    *outCode = -2;
     return false;
   }
 
-  client.printf("GET /status HTTP/1.1\r\n");
-  client.printf("Host: %s:%d\r\n", SERVER_HOST, SERVER_PORT);
-  if (strlen(API_TOKEN) > 0) {
-    client.printf("X-API-Key: %s\r\n", API_TOKEN);
+  size_t sent = 0;
+  unsigned long writeStart = millis();
+  while (sent < frameLen) {
+    size_t chunk = frameLen - sent;
+    if (chunk > 4096) chunk = 4096;
+    size_t n = persistClient.write(fb->buf + sent, chunk);
+    if (n == 0) {
+      if (!persistClient.connected()) break;
+      if (millis() - writeStart > READ_TIMEOUT_MS) break;
+      delay(1);
+      continue;
+    }
+    sent += n;
+    if (millis() - writeStart > READ_TIMEOUT_MS) break;
   }
-  client.printf("Connection: close\r\n\r\n");
+
+  esp_camera_fb_return(fb);
+  fb = NULL;
+
+  if (sent != frameLen) {
+    persistClient.stop();
+    persistValid = false;
+    *outCode = -3;
+    return false;
+  }
 
   bool stateSeen = false;
   bool stateVal = false;
-  if (!readHttpStateFromClient(client, &code, &stateSeen, &stateVal)) {
-    client.stop();
-    logNet("Status", code);
-    return false;
-  }
-  client.stop();
+  int code = -11;
+  bool parsed = readHttpStateFromClient(persistClient, &code, &stateSeen, &stateVal);
 
-  if (stateSeen) isDrowsy = stateVal;
-  if (code != 200) {
-    logNet("Status", code);
-    return false;
+  if (!parsed || (code != 200 && code != 204)) {
+    persistClient.stop();
+    persistValid = false;
+    if (!parsed) {
+      *outCode = code;
+      return false;
+    }
+  } else {
+    persistValid = true;
   }
-  return true;
+
+  if (stateSeen) {
+    isDrowsy = stateVal;
+  }
+
+  *outCode = code;
+  return (code == 200 || code == 204);
 }
 
-// ── LED / alerts ──────────────────────────────────────────────────────────────
-// LED behaviour:
-//   WiFi down             → OFF
-//   WiFi up, no server    → slow heartbeat (12ms / 3s) — board alive, no server
-//   WiFi up, server ok    → slow heartbeat
-//   Drowsy                → fast blink (120ms)
+void onFrameResult(bool ok, int code) {
+  unsigned long now = millis();
+
+  if (ok) {
+    lastServerOkMs = now;
+    retryAttempt = 0;
+    nextSendAllowedMs = now + FRAME_INTERVAL_MS;
+    logNet(isDrowsy ? "OK:DROWSY" : "OK:NORMAL", code);
+    return;
+  }
+
+  logNet("Frame", code);
+
+  if (retryAttempt < MAX_RETRIES) {
+    retryAttempt++;
+    unsigned long backoff = RETRY_BASE_MS << (retryAttempt - 1);
+    if (backoff > 640) backoff = 640;
+    nextSendAllowedMs = now + backoff;
+  } else {
+    retryAttempt = 0;
+    nextSendAllowedMs = now + FRAME_INTERVAL_MS;
+  }
+}
 
 void updateAlerts() {
   unsigned long now = millis();
@@ -395,43 +431,35 @@ void updateAlerts() {
   }
 
   if (isDrowsy && serverConnected) {
-    // Fast blink regardless of heartbeat state.
     if (now - lastBlinkMs >= LED_DROWSY_MS) {
       led(!ledOn);
       lastBlinkMs = now;
     }
     heartbeatPhaseOn = false;
-    lastHeartbeatMs  = now;
+    lastHeartbeatMs = now;
     return;
   }
 
-  // Slow heartbeat: connected or waiting for server.
   unsigned long elapsed = now - lastHeartbeatMs;
   if (!heartbeatPhaseOn && elapsed >= LED_HB_OFF_MS) {
     heartbeatPhaseOn = true;
-    lastHeartbeatMs  = now;
+    lastHeartbeatMs = now;
     led(true);
   } else if (heartbeatPhaseOn && elapsed >= LED_HB_ON_MS) {
     heartbeatPhaseOn = false;
-    lastHeartbeatMs  = now;
+    lastHeartbeatMs = now;
     led(false);
   }
 }
-
-// ── Setup / loop ──────────────────────────────────────────────────────────────
 
 void setup() {
   Serial.begin(115200);
   delay(200);
 
-  pinMode(BUZZER_PIN,     OUTPUT);
+  pinMode(BUZZER_PIN, OUTPUT);
   pinMode(STATUS_LED_PIN, OUTPUT);
-  // Do NOT call ledcSetup/ledcAttach on STATUS_LED_PIN (GPIO4).
   buzzer(false);
   led(false);
-
-  frameUrl  = String("http://") + SERVER_HOST + ":" + SERVER_PORT + "/frame";
-  statusUrl = String("http://") + SERVER_HOST + ":" + SERVER_PORT + "/status";
 
   if (!cameraInit()) {
     Serial.println("FATAL: camera init failed");
@@ -445,37 +473,14 @@ void loop() {
   wifiMaintain();
   unsigned long now = millis();
 
-  // Non-blocking backoff pause.
-  if (now < backoffUntilMs) { updateAlerts(); return; }
-
   bool ready = WiFi.status() == WL_CONNECTED && wifiSettled;
 
-  if (ready && now - lastFrameMs >= (unsigned long)frameIntervalMs) {
-    // Use adaptive pacing so unstable links stay responsive instead of collapsing.
-    bool ok = sendFrame();
-    if (ok) {
-      lastServerOkMs = now;
-      consecutiveFails = 0;
-      frameIntervalMs = max(FRAME_MIN_MS, frameIntervalMs - 4);
-    } else {
-      consecutiveFails++;
-      frameIntervalMs = min(FRAME_MAX_MS, frameIntervalMs + 16);
-    }
-    lastFrameMs = now;
-  }
-
-  // Fallback poll — only when frame responses aren't updating isDrowsy.
-  if (ready && now - lastStatusMs >= STATUS_POLL_MS) {
-    if (pollStatus()) lastServerOkMs = now;
-    lastStatusMs = now;
-  }
-
-  if (ready && consecutiveFails >= FAIL_THRESHOLD) {
-    Serial.printf("Backoff: %d fails interval=%dms\n", consecutiveFails, frameIntervalMs);
-    consecutiveFails = 0;
-    frameIntervalMs = min(FRAME_MAX_MS, frameIntervalMs + 30);
-    backoffUntilMs   = millis() + BACKOFF_MS;
-    closeFrameConn();
+  if (ready && !sendBusy && now >= nextSendAllowedMs) {
+    sendBusy = true;
+    int code = -99;
+    bool ok = sendFrameOnce(&code);
+    sendBusy = false;
+    onFrameResult(ok, code);
   }
 
   serverConnected = (now - lastServerOkMs) <= SERVER_TIMEOUT_MS;

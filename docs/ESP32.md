@@ -50,7 +50,7 @@ In Arduino IDE, update:
 
 - On Wi-Fi + server success:
   - sends frames to `POST /frame`
-  - polls `GET /status`
+  - reads drowsy state from `X-Drowsy-State` response header
 - LED states:
   - `OFF` disconnected
   - `SOLID ON` connected + normal

@@ -11,7 +11,7 @@
 
 - Receive camera frames from browser (`/ws/video`) or ESP32 (`/frame`).
 - Run EAR-based drowsiness detection.
-- Expose current detection state via `/status`.
+- Return current detection state via `X-Drowsy-State` response header on `/frame`.
 - Expose runtime config via `/config`.
 
 ## Detection Logic (Concise)
@@ -28,11 +28,11 @@ Config values are read from `config/system_config.json`.
 ## API Endpoints
 
 - `GET /` health
-- `GET /status` current state JSON
 - `GET /config` active config JSON
-- `GET /metrics` lightweight frame counters
+- `GET /metrics` frame counters and detection state
+- `GET /health` system health status
 - `GET /debug/frame.jpg` latest processed frame (mesh + EAR/state overlay)
-- `POST /frame` raw JPEG bytes from ESP32
+- `POST /frame` raw JPEG bytes from ESP32; returns `X-Drowsy-State` header
 - `WS /ws/video` browser simulation stream
 
 If `network.api_token` is set in `config/system_config.json`, send it in header:

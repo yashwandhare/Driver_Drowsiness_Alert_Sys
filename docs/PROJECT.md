@@ -59,7 +59,7 @@ Edge Compute → Decision → ESP32-CAM → Alert
 
 ## Hardware Components
 
-* ESP32-CAM (AI-Thinker with OV2640 camera)
+* ESP32-CAM (AI-Thinker with OV3660 camera)
 * Active buzzer (5V)
 * LED with 220Ω resistor
 * Mini breadboard (~170 tie points)
@@ -73,7 +73,7 @@ Edge Compute → Decision → ESP32-CAM → Alert
 ### Embedded Side
 
 * Arduino framework (ESP32-CAM firmware)
-* MJPEG video streaming over Wi-Fi
+* JPEG frame capture over Wi-Fi (HTTP POST)
 * GPIO control for LED and buzzer
 
 ### Backend / Vision Side
@@ -132,8 +132,8 @@ The ESP32-CAM performs **no image processing** and acts only as a capture and tr
 
   * `NORMAL`
   * `DROWSY`
-* Backend exposes detection result via `/status` endpoint
-* ESP32-CAM polls `/status` periodically
+* Backend returns detection result via `X-Drowsy-State` response header on `/frame`
+* ESP32-CAM reads the header after each frame upload
 
 ### Alert Behavior
 

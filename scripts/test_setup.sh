@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path('backend').resolve()))
 from app.main import app
 
 paths = {r.path for r in app.routes}
-required = {'/', '/status', '/metrics', '/config', '/frame', '/debug/frame.jpg'}
+required = {'/', '/metrics', '/config', '/frame', '/debug/frame.jpg'}
 missing = required - paths
 if missing:
     raise SystemExit(f"Missing routes: {sorted(missing)}")

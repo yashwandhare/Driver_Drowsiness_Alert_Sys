@@ -201,19 +201,6 @@
     #panel-cam .panel-body {
       background: #000;
       position: relative;
-      isolation: isolate;
-    }
-    #panel-cam .panel-body::before {
-      content: "";
-      position: absolute;
-      inset: 0;
-      background: repeating-linear-gradient(
-        0deg,
-        rgba(255,255,255,0.06) 0 1px,
-        transparent 1px 3px
-      );
-      pointer-events: none;
-      z-index: 5;
     }
     #video, #debug-frame {
       width: 100%; height: 100%;
@@ -468,7 +455,7 @@
           <span class="gauge-val" id="gv-ear">—</span>
         </div>
         <div class="gauge-row">
-          <span class="gauge-lbl">Closed Frames</span>
+          <span class="gauge-lbl">Closed Time</span>
           <div class="gauge-bar-wrap"><div class="gauge-bar" id="gauge-cf" style="width:0%"></div></div>
           <span class="gauge-val" id="gv-cf">—</span>
         </div>
@@ -547,7 +534,8 @@
   const BACKEND   = `${location.protocol}//${location.hostname}:8000`;
   const WS_URL    = `${location.protocol==='https:'?'wss':'ws'}://${location.hostname}:8000/ws/video`;
   const API_TOKEN = "";
-  let drowsyFramesMax = 10;
+  let drowsyFramesMax = 5;
+  let drowsyMsMax = 500;
 
   const authH = () => API_TOKEN ? {"X-API-Key": API_TOKEN} : {};
 
@@ -684,6 +672,7 @@
   function updateGauges(status, metrics) {
     const ear = status.ear_current??null;
     const cf  = status.closed_frames??0;
+    const cm  = status.closed_ms??0;
 
     if (ear!==null) {
       earBig.textContent = ear.toFixed(3);
@@ -699,11 +688,11 @@
     earBar.className   = "gauge-bar" + (ear!==null && ear<0.25 ? " crit" : ear!==null && ear<0.28 ? " warn" : "");
     $("gv-ear").textContent = ear!==null ? ear.toFixed(3) : "—";
 
-    const cfPct = Math.min(100, (cf/drowsyFramesMax)*100);
+    const cfPct = Math.min(100, (cm/drowsyMsMax)*100);
     const cfBar = $("gauge-cf");
     cfBar.style.width = cfPct+"%";
     cfBar.className   = "gauge-bar" + (cfPct>80?" crit":cfPct>50?" warn":"");
-    $("gv-cf").textContent = `${cf}/${drowsyFramesMax}`;
+    $("gv-cf").textContent = `${cm}ms`;
 
     const st = status.state||"—";
     $("kv-state").textContent = st;
@@ -745,13 +734,17 @@
 
   async function poll() {
     try {
-      const [sRes, mRes] = await Promise.all([
-        fetch(`${BACKEND}/status`,  {headers:authH()}),
-        fetch(`${BACKEND}/metrics`, {headers:authH()}),
-      ]);
-      if (!sRes.ok) throw new Error("status "+sRes.status);
-      const status  = await sRes.json();
-      const metrics = mRes.ok ? await mRes.json() : {};
+      const mRes = await fetch(`${BACKEND}/metrics`, {headers:authH()});
+      if (!mRes.ok) throw new Error("metrics "+mRes.status);
+      const metrics = await mRes.json();
+      const status = {
+        state: metrics.state,
+        ear_current: metrics.ear_current,
+        ear_ema: metrics.ear_ema,
+        closed_frames: metrics.closed_frames,
+        closed_ms: metrics.closed_ms,
+        alert_active: metrics.alert_active,
+      };
 
       setStateBadge(status.state);
       updateGauges(status, metrics);
@@ -808,9 +801,10 @@
       const res = await fetch(`${BACKEND}/config`, {headers:authH()});
       if (!res.ok) return;
       const cfg = await res.json();
-      const n = cfg?.detection?.drowsy_frames;
-      if (typeof n === "number" && n > 0 && n < 100) {
-        drowsyFramesMax = n;
+      const s = cfg?.detection?.drowsy_seconds;
+      if (typeof s === "number" && s > 0 && s < 10) {
+        drowsyMsMax = Math.round(s * 1000);
+        drowsyFramesMax = Math.max(1, Math.round(s * 10));
       }
     } catch {}
   }
