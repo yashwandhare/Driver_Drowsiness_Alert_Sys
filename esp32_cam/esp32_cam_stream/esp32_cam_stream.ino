@@ -35,6 +35,10 @@ const bool  ENABLE_BUZZER = true;
 #define LED_HB_OFF_MS      2970
 #define LED_DROWSY_MS       120
 
+// Buzzer heartbeat when drowsy: 350 ms on, 350 ms off.
+#define BUZZER_BEAT_ON_MS   350
+#define BUZZER_BEAT_OFF_MS  350
+
 // ── Camera pins (AI Thinker) ──────────────────────────────────────────────────
 #define PWDN_GPIO_NUM   32
 #define RESET_GPIO_NUM  -1
@@ -425,9 +429,8 @@ void onFrameResult(bool ok, int code) {
 
 void updateAlerts() {
   unsigned long now = millis();
-  buzzer(serverConnected && isDrowsy);
 
-  if (!wifiSettled) {
+  if (!serverConnected || !wifiSettled) {
     led(false);
     buzzer(false);
     heartbeatPhaseOn = false;
@@ -438,7 +441,7 @@ void updateAlerts() {
     if (now - lastBlinkMs >= LED_DROWSY_MS) {
       ledOn = !ledOn;
       led(ledOn);
-      buzzer(ledOn);
+      buzzer(ledOn); // Sync buzzer pulse with LED
       lastBlinkMs = now;
     }
     heartbeatPhaseOn = false;
@@ -447,7 +450,8 @@ void updateAlerts() {
   }
 
   buzzer(false);
-  // Heartbeat: 30 ms on / 2970 ms off.
+
+  // LED heartbeat: 30 ms on / 2970 ms off.
   unsigned long elapsed = now - lastHeartbeatMs;
   if (!heartbeatPhaseOn && elapsed >= LED_HB_OFF_MS) {
     heartbeatPhaseOn = true;
@@ -459,8 +463,14 @@ void updateAlerts() {
     led(false);
   }
 }
-
 // ── Arduino entry points ───────────────────────────────────────────────────────
+
+void alertTask(void * parameter) {
+  for(;;) {
+    updateAlerts();
+    vTaskDelay(10 / portTICK_PERIOD_MS);
+  }
+}
 
 void setup() {
   Serial.begin(115200);
@@ -475,6 +485,17 @@ void setup() {
     Serial.println("FATAL: camera init failed");
     while (true) { led(true); delay(150); led(false); delay(150); }
   }
+
+  // Run alerts independent of WiFi blocking on Core 0
+  xTaskCreatePinnedToCore(
+    alertTask,
+    "AlertTask",
+    2048,
+    NULL,
+    1,
+    NULL,
+    0
+  );
 
   wifiMaintain();
 }
@@ -492,5 +513,4 @@ void loop() {
   }
 
   serverConnected = (now - lastServerOkMs) <= SERVER_TIMEOUT_MS;
-  updateAlerts();
 }

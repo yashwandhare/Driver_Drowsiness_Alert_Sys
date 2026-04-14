@@ -20,7 +20,7 @@
     "drowsy_seconds": 0.8,
     "recover_seconds": 0.3,
     "process_every_n": 1,
-    "mp_input_size": 192,
+    "mp_input_size": 256,
     "debug_every_n": 4,
     "show_display": false
   },

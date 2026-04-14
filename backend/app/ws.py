@@ -17,41 +17,121 @@ from app.config import SETTINGS
 logger = logging.getLogger("das")
 
 # ── Detection config ──────────────────────────────────────────────────────────
-EAR_CLOSE      = float(SETTINGS["detection"]["ear_close_threshold"])
-EAR_OPEN       = float(SETTINGS["detection"]["ear_open_threshold"])
-DROWSY_SECONDS = float(SETTINGS["detection"]["drowsy_seconds"])
-RECOVER_SECONDS= float(SETTINGS["detection"]["recover_seconds"])
-SHOW_DISPLAY   = bool(SETTINGS["detection"]["show_display"])
-MP_SIZE        = int(SETTINGS["detection"]["mp_input_size"])
-DEBUG_EVERY_N  = max(1, int(SETTINGS["detection"]["debug_every_n"]))
-API_TOKEN      = SETTINGS["network"].get("api_token", "").strip()
+EAR_CLOSE       = float(SETTINGS["detection"]["ear_close_threshold"])
+EAR_OPEN        = float(SETTINGS["detection"]["ear_open_threshold"])
+DROWSY_SECONDS  = float(SETTINGS["detection"]["drowsy_seconds"])
+RECOVER_SECONDS = float(SETTINGS["detection"]["recover_seconds"])
+SHOW_DISPLAY    = bool(SETTINGS["detection"]["show_display"])
+MP_SIZE         = int(SETTINGS["detection"]["mp_input_size"])
+DEBUG_EVERY_N   = max(1, int(SETTINGS["detection"]["debug_every_n"]))
+API_TOKEN       = SETTINGS["network"].get("api_token", "").strip()
 
-MAX_BODY_BYTES = 10 * 1024 * 1024
-STALE_RESET_S  = 8
-DEBUG_QUALITY  = 75
-
-# EMA alpha: 0.35 keeps recent frames relevant but smooths out blink noise.
-EAR_EMA_ALPHA = 0.35
-
-# No-face reset: drop to NORMAL after this many ms without a detected face.
+MAX_BODY_BYTES   = 10 * 1024 * 1024
+STALE_RESET_S    = 8
+DEBUG_QUALITY    = 75
 NO_FACE_RESET_MS = 1500
 
-LEFT_EYE  = [33, 160, 158, 133, 153, 144]
+# EMA alpha: 0.35 smooths blink noise while staying responsive.
+EAR_EMA_ALPHA = 0.35
+
+# Buzzer heartbeat: 350 ms on, 350 ms off while drowsy.
+BUZZER_BEAT_MS = 350
+
+# ── Eye landmark indices (MediaPipe 468-point mesh) ───────────────────────────
+#
+# Each eye uses 6 points:
+#   p0/p3 = outer/inner corners (horizontal distance)
+#   p1,p2 / p4,p5 = upper/lower lid pairs (vertical distances)
+#
+# EAR = (||p1-p5|| + ||p2-p4||) / (2 * ||p0-p3||)
+# Using both vertical pairs is more robust than one alone.
+#
+LEFT_EYE  = [33,  160, 158, 133, 153, 144]
 RIGHT_EYE = [362, 385, 387, 263, 373, 380]
 
+# Corner landmarks used to judge whether an eye is inside the frame.
+LEFT_EYE_CORNERS  = (33,  133)
+RIGHT_EYE_CORNERS = (362, 263)
+
 mp_face_mesh = mp.solutions.face_mesh
+
+# CLAHE reused across frames — do not recreate per frame.
+_clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(4, 4))
+
+
+# ── Image preprocessing ───────────────────────────────────────────────────────
+
+def preprocess(bgr: np.ndarray) -> np.ndarray:
+    """
+    Apply CLAHE on the L channel (LAB space).
+    Normalises contrast on OV3660 frames in backlit / dim conditions.
+    """
+    lab = cv2.cvtColor(bgr, cv2.COLOR_BGR2LAB)
+    l, a, b = cv2.split(lab)
+    l = _clahe.apply(l)
+    return cv2.cvtColor(cv2.merge((l, a, b)), cv2.COLOR_LAB2BGR)
+
+
+# ── EAR computation ───────────────────────────────────────────────────────────
+
+def _ear_single(eye_idx: list, lm, sz: int) -> float:
+    pts = [(lm.landmark[i].x * sz, lm.landmark[i].y * sz) for i in eye_idx]
+    a = math.dist(pts[1], pts[5])
+    b = math.dist(pts[2], pts[4])
+    c = math.dist(pts[0], pts[3])
+    return (a + b) / (2.0 * c) if c > 1e-6 else 0.0
+
+
+def _eye_in_frame(corners: tuple, lm) -> bool:
+    """True if both corner landmarks are well inside the [0,1] frame boundary."""
+    for idx in corners:
+        p = lm.landmark[idx]
+        if not (0.02 < p.x < 0.98 and 0.02 < p.y < 0.98):
+            return False
+    return True
+
+
+def compute_ear(lm, sz: int) -> Optional[float]:
+    """
+    Average EAR from whichever eyes are fully visible.
+    Returns None if no eye is reliably in frame.
+    """
+    left_ok  = _eye_in_frame(LEFT_EYE_CORNERS,  lm)
+    right_ok = _eye_in_frame(RIGHT_EYE_CORNERS, lm)
+
+    if left_ok and right_ok:
+        return (_ear_single(LEFT_EYE, lm, sz) + _ear_single(RIGHT_EYE, lm, sz)) / 2.0
+    if left_ok:
+        return _ear_single(LEFT_EYE, lm, sz)
+    if right_ok:
+        return _ear_single(RIGHT_EYE, lm, sz)
+    return None
+
+
+# ── Buzzer heartbeat clock ────────────────────────────────────────────────────
+
+class BuzzerClock:
+    """
+    Returns "ON" or "OFF" based on wall-clock phase.
+    Consistent across frames — the ESP32 just reads and obeys.
+    """
+    def beat(self, drowsy: bool) -> str:
+        if not drowsy:
+            return "OFF"
+        phase = int(time.monotonic() * 1000) // BUZZER_BEAT_MS
+        return "ON" if phase % 2 == 0 else "OFF"
 
 
 # ── Drowsiness state machine ──────────────────────────────────────────────────
 
 class DrowsinessState:
     def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self.state        = "NORMAL"
-        self.alert_active = False
-        self.ear_raw      = 0.0
+        self._lock              = threading.Lock()
+        self.state              = "NORMAL"
+        self.alert_active       = False
+        self.ear_raw            = 0.0
         self.ear_ema: Optional[float] = None
-        self.closed_frames = 0
+        self.closed_frames      = 0
         self._closed_since_ms:  Optional[int] = None
         self._recover_since_ms: Optional[int] = None
         self._no_face_since_ms: Optional[int] = None
@@ -99,17 +179,17 @@ class DrowsinessState:
                     self.alert_active      = False
                 return
 
-            # EAR in dead zone — hold current state, decay closed count slowly.
+            # EAR in dead zone — hold state, slowly decay closed count.
             self.closed_frames = max(0, self.closed_frames - 1)
 
     def _reset_unlocked(self) -> None:
-        self.state             = "NORMAL"
-        self.alert_active      = False
-        self.closed_frames     = 0
-        self.ear_ema           = None
-        self._closed_since_ms  = None
-        self._recover_since_ms = None
-        self._no_face_since_ms = None
+        self.state              = "NORMAL"
+        self.alert_active       = False
+        self.closed_frames      = 0
+        self.ear_ema            = None
+        self._closed_since_ms   = None
+        self._recover_since_ms  = None
+        self._no_face_since_ms  = None
 
     def stale_reset(self) -> None:
         with self._lock:
@@ -118,15 +198,15 @@ class DrowsinessState:
 
     def get_status(self) -> dict:
         with self._lock:
-            now_ms     = int(time.monotonic() * 1000)
-            closed_ms  = 0 if self._closed_since_ms is None else max(0, now_ms - self._closed_since_ms)
+            now_ms    = int(time.monotonic() * 1000)
+            closed_ms = 0 if self._closed_since_ms is None else max(0, now_ms - self._closed_since_ms)
             return {
-                "state":        self.state,
-                "closed_frames":self.closed_frames,
-                "closed_ms":    closed_ms,
-                "ear_current":  round(self.ear_raw, 3),
-                "ear_ema":      round(self.ear_ema, 3) if self.ear_ema is not None else None,
-                "alert_active": self.alert_active,
+                "state":         self.state,
+                "closed_frames": self.closed_frames,
+                "closed_ms":     closed_ms,
+                "ear_current":   round(self.ear_raw, 3),
+                "ear_ema":       round(self.ear_ema, 3) if self.ear_ema is not None else None,
+                "alert_active":  self.alert_active,
             }
 
 
@@ -134,7 +214,7 @@ class DrowsinessState:
 
 class StreamStats:
     def __init__(self) -> None:
-        self._lock = threading.Lock()
+        self._lock                   = threading.Lock()
         self.frame_rx_total          = 0
         self.frame_decode_fail_total = 0
         self.frame_enqueue_total     = 0
@@ -228,10 +308,9 @@ class StreamStats:
 
 class DebugStore:
     def __init__(self) -> None:
-        self._lock = threading.Lock()
+        self._lock              = threading.Lock()
         self._jpeg: Optional[bytes] = None
-        # Track when the frontend last fetched — guarded by the same lock.
-        self._last_fetch_ms: int = 0
+        self._last_fetch_ms     = 0
 
     def put(self, data: bytes) -> None:
         with self._lock:
@@ -249,11 +328,12 @@ class DebugStore:
 
 # ── Globals ───────────────────────────────────────────────────────────────────
 
-drowsiness  = DrowsinessState()
-stats       = StreamStats()
-debug_store = DebugStore()
+drowsiness   = DrowsinessState()
+stats        = StreamStats()
+debug_store  = DebugStore()
+buzzer_clock = BuzzerClock()
 frame_queue: Queue = Queue(maxsize=1)
-_stop       = threading.Event()
+_stop        = threading.Event()
 _cv_thread: Optional[threading.Thread] = None
 
 
@@ -267,8 +347,7 @@ def require_api_key(key: Optional[str]) -> None:
 def decode_jpeg(data: bytes) -> Optional[np.ndarray]:
     if not data:
         return None
-    arr = np.frombuffer(data, np.uint8)
-    return cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    return cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
 
 
 def enqueue(img: Optional[np.ndarray]) -> None:
@@ -288,16 +367,8 @@ def enqueue(img: Optional[np.ndarray]) -> None:
         stats.on_queue_drop()
 
 
-def ear(eye_idx: list, lm, sz: int) -> float:
-    pts = [(lm.landmark[i].x * sz, lm.landmark[i].y * sz) for i in eye_idx]
-    a = math.dist(pts[1], pts[5])
-    b = math.dist(pts[2], pts[4])
-    c = math.dist(pts[0], pts[3])
-    return (a + b) / (2.0 * c) if c > 0 else 0.0
-
-
 def render_debug(frame: np.ndarray, lm, ear_val: Optional[float], status: dict) -> Optional[bytes]:
-    dbg   = frame.copy()
+    dbg    = frame.copy()
     drowsy = status["state"] == "DROWSY"
     color  = (0, 0, 255) if drowsy else (0, 255, 0)
 
@@ -308,7 +379,8 @@ def render_debug(frame: np.ndarray, lm, ear_val: Optional[float], status: dict) 
             cv2.circle(dbg, (int(p.x * w), int(p.y * h)), 1, (0, 220, 220), -1)
 
     ear_s = f"{ear_val:.3f}" if ear_val is not None else "-"
-    cv2.putText(dbg, status["state"], (10, 34), cv2.FONT_HERSHEY_SIMPLEX, 1.0, color, 2)
+    cv2.putText(dbg, status["state"],
+                (10, 34), cv2.FONT_HERSHEY_SIMPLEX, 1.0, color, 2)
     cv2.putText(dbg, f"EAR {ear_s}  C {status['closed_ms']}ms",
                 (10, 62), cv2.FONT_HERSHEY_SIMPLEX, 0.52, (210, 210, 210), 1)
 
@@ -329,15 +401,14 @@ def cv_worker() -> None:
         try:
             with mp_face_mesh.FaceMesh(
                 max_num_faces=1,
-                refine_landmarks=False,
-                min_detection_confidence=0.5,
-                min_tracking_confidence=0.5,
+                refine_landmarks=True,          # iris mesh — more precise eyelid points
+                min_detection_confidence=0.6,   # stricter: fewer phantom detections
+                min_tracking_confidence=0.6,
             ) as mesh:
-                logger.info("[CV] FaceMesh ready")
+                logger.info("[CV] FaceMesh ready (refine_landmarks=True)")
                 fail_streak = 0
 
                 while not _stop.is_set():
-                    # Stale reset if no frames for a while.
                     if stats.age_ms() > STALE_RESET_S * 1000 and stats.frame_rx_total > 0:
                         drowsiness.stale_reset()
 
@@ -349,7 +420,9 @@ def cv_worker() -> None:
                     frame_idx += 1
                     start = time.perf_counter()
 
+                    # Resize first, then enhance — cheaper on the smaller image.
                     roi = cv2.resize(frame, (MP_SIZE, MP_SIZE), interpolation=cv2.INTER_LINEAR)
+                    roi = preprocess(roi)
 
                     try:
                         results = mesh.process(cv2.cvtColor(roi, cv2.COLOR_BGR2RGB))
@@ -362,7 +435,7 @@ def cv_worker() -> None:
                     lm      = None
                     if results.multi_face_landmarks:
                         lm      = results.multi_face_landmarks[0]
-                        ear_val = (ear(LEFT_EYE, lm, MP_SIZE) + ear(RIGHT_EYE, lm, MP_SIZE)) / 2.0
+                        ear_val = compute_ear(lm, MP_SIZE)
 
                     now_ms = int(time.monotonic() * 1000)
                     drowsiness.update(ear_val, now_ms)
@@ -473,15 +546,16 @@ async def frame_upload(request: Request, x_api_key: Optional[str] = Header(defau
 
     status     = drowsiness.get_status()
     state      = status["state"]
+    drowsy     = state == "DROWSY"
     latency_ms = int(time.time() * 1000) - started_ms
 
-    status_code = 200 if img is not None else 400
     return Response(
         content=state.encode(),
-        status_code=status_code,
+        status_code=200 if img is not None else 400,
         media_type="text/plain",
         headers={
-            "X-Drowsy-State":    state,
+            "X-Drowsy-State":      state,
+            "X-Buzzer-State":      buzzer_clock.beat(drowsy),
             "X-Server-Latency-Ms": str(latency_ms),
         },
     )
@@ -501,12 +575,12 @@ def get_health() -> dict:
     snap     = stats.snapshot(drowsiness.get_status())
     degraded = stats.fail_rate() > 0.35 or snap["process_latency_ms"] > 400
     return {
-        "healthy":          not (age > 5000 and ever_rx) and alive and not degraded,
-        "stalled":          age > 5000 and ever_rx,
-        "degraded":         degraded,
-        "worker_alive":     alive,
-        "last_frame_age_ms":age,
-        "decode_fail_rate": round(stats.fail_rate(), 3),
+        "healthy":           not (age > 5000 and ever_rx) and alive and not degraded,
+        "stalled":           age > 5000 and ever_rx,
+        "degraded":          degraded,
+        "worker_alive":      alive,
+        "last_frame_age_ms": age,
+        "decode_fail_rate":  round(stats.fail_rate(), 3),
     }
 
 
