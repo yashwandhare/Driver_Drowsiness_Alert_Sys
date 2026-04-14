@@ -438,20 +438,18 @@ void updateAlerts() {
   }
 
   if (isDrowsy) {
+    // Pulse buzzer pin rapidly (which now also pulses your external LED)
     if (now - lastBlinkMs >= LED_DROWSY_MS) {
       ledOn = !ledOn;
-      led(ledOn);
-      buzzer(ledOn); // Sync buzzer pulse with LED
+      buzzer(ledOn);
       lastBlinkMs = now;
     }
-    heartbeatPhaseOn = false;
-    lastHeartbeatMs  = now;
-    return;
+  } else {
+    buzzer(false);
+    ledOn = false;
   }
 
-  buzzer(false);
-
-  // LED heartbeat: 30 ms on / 2970 ms off.
+  // Onboard status LED ALWAYS maintains normal heartbeat: 30 ms on / 2970 ms off.
   unsigned long elapsed = now - lastHeartbeatMs;
   if (!heartbeatPhaseOn && elapsed >= LED_HB_OFF_MS) {
     heartbeatPhaseOn = true;
