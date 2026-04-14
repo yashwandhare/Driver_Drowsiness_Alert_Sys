@@ -35,9 +35,6 @@ const bool  ENABLE_BUZZER = true;
 #define LED_HB_OFF_MS      2970
 #define LED_DROWSY_MS       120
 
-// Buzzer heartbeat when drowsy: 350 ms on, 350 ms off.
-#define BUZZER_BEAT_ON_MS   350
-#define BUZZER_BEAT_OFF_MS  350
 
 // ── Camera pins (AI Thinker) ──────────────────────────────────────────────────
 #define PWDN_GPIO_NUM   32

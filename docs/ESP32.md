@@ -51,10 +51,12 @@ In Arduino IDE, update:
 - On Wi-Fi + server success:
   - sends frames to `POST /frame`
   - reads drowsy state from `X-Drowsy-State` response header
-- LED states:
-  - `OFF` disconnected
-  - `SOLID ON` connected + normal
-  - `FAST BLINK` connected + drowsy
+- Onboard LED states:
+  - `OFF`: Disconnected/Initializing
+  - `HEARTBEAT` (30ms ON / ~3s OFF): Connected + Normal
+- Buzzer (GPIO 13) states:
+  - `OFF`: Normal
+  - `FAST PULSE` (120ms): Drowsy (also drives any external LEDs wired in parallel)
 
 ## Stability Tips (Important)
 

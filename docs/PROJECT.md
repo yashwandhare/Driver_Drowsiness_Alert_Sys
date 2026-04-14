@@ -2,7 +2,7 @@
 
 # Driver Drowsiness Alert System
 
-🚗 **AI-Based Driver Drowsiness Detection and Alert System**
+**AI-Based Driver Drowsiness Detection and Alert System**
 
 ---
 
@@ -137,8 +137,9 @@ The ESP32-CAM performs **no image processing** and acts only as a capture and tr
 
 ### Alert Behavior
 
-* **DROWSY**: Buzzer ON, LED ON
-* **NORMAL**: Alerts OFF
+* **NORMAL**: Onboard LED pulses as a slow 3-second heartbeat. Buzzer is silent.
+* **DROWSY**: Buzzer (and any external LED parallel to it) rapidly pulses at 120ms intervals. Onboard LED maintains its independent 3-second heartbeat.
+* Entire alert logic runs completely asynchronously on the ESP32's isolated Core 0 via FreeRTOS, guaranteeing perfect millisecond-level precision without being blocked by latency from the HTTP Wi-Fi frame uploads on Core 1.
 
 ---
 

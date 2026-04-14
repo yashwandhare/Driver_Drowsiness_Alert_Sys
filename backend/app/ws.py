@@ -34,8 +34,6 @@ NO_FACE_RESET_MS = 1500
 # EMA alpha: 0.35 smooths blink noise while staying responsive.
 EAR_EMA_ALPHA = 0.35
 
-# Buzzer heartbeat: 350 ms on, 350 ms off while drowsy.
-BUZZER_BEAT_MS = 350
 
 # ── Eye landmark indices (MediaPipe 468-point mesh) ───────────────────────────
 #
@@ -110,16 +108,6 @@ def compute_ear(lm, sz: int) -> Optional[float]:
 
 # ── Buzzer heartbeat clock ────────────────────────────────────────────────────
 
-class BuzzerClock:
-    """
-    Returns "ON" or "OFF" based on wall-clock phase.
-    Consistent across frames — the ESP32 just reads and obeys.
-    """
-    def beat(self, drowsy: bool) -> str:
-        if not drowsy:
-            return "OFF"
-        phase = int(time.monotonic() * 1000) // BUZZER_BEAT_MS
-        return "ON" if phase % 2 == 0 else "OFF"
 
 
 # ── Drowsiness state machine ──────────────────────────────────────────────────
@@ -331,7 +319,7 @@ class DebugStore:
 drowsiness   = DrowsinessState()
 stats        = StreamStats()
 debug_store  = DebugStore()
-buzzer_clock = BuzzerClock()
+
 frame_queue: Queue = Queue(maxsize=1)
 _stop        = threading.Event()
 _cv_thread: Optional[threading.Thread] = None
@@ -555,7 +543,7 @@ async def frame_upload(request: Request, x_api_key: Optional[str] = Header(defau
         media_type="text/plain",
         headers={
             "X-Drowsy-State":      state,
-            "X-Buzzer-State":      buzzer_clock.beat(drowsy),
+
             "X-Server-Latency-Ms": str(latency_ms),
         },
     )
