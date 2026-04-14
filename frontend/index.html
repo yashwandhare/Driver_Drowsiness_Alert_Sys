@@ -21,7 +21,7 @@
       --red-d:    #7f2323;
       --amber:    #ff9f1a;
       --amber-d:  #7d5115;
-      --cyan:     #ff9f1a;
+      --cyan:     #38d9f5;
       --white:    #f7f7f7;
       --font-mono: 'IBM Plex Mono', monospace;
       --font-head: 'Bebas Neue', sans-serif;
@@ -729,6 +729,11 @@
     if (metrics.worker_alive !== undefined) {
       $("kv-worker").textContent = metrics.worker_alive ? "ALIVE" : "DEAD";
       $("kv-worker").className   = "v " + (metrics.worker_alive?"green":"red");
+    }
+    const ema = status.ear_ema ?? null;
+    if ($("kv-ema")) {
+      $("kv-ema").textContent = ema !== null ? ema.toFixed(3) : "—";
+      $("kv-ema").className   = "v" + (ema !== null && ema < 0.25 ? " red" : ema !== null && ema < 0.28 ? " amber" : "");
     }
   }
 

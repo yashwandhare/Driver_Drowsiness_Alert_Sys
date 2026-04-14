@@ -4,19 +4,19 @@
     "stream_format": "MJPEG",
     "target_fps": 10,
     "frame_size": "QVGA",
-    "jpeg_quality": 11,
+    "jpeg_quality": 12,
     "xclk_hz": 20000000
   },
   "network": {
-    "server_host": "10.96.37.243",
+    "server_host": "10.227.132.243",
     "backend_port": 8000,
     "frontend_port": 5500,
-    "frame_interval_ms": 95,
+    "frame_interval_ms": 100,
     "api_token": ""
   },
   "detection": {
     "ear_close_threshold": 0.24,
-    "ear_open_threshold":  0.28,
+    "ear_open_threshold": 0.28,
     "drowsy_seconds": 0.8,
     "recover_seconds": 0.3,
     "process_every_n": 1,
