@@ -15,7 +15,7 @@ const bool  ENABLE_BUZZER = true;
 
 // ── Pin map ───────────────────────────────────────────────────────────────────
 #define BUZZER_PIN        13
-#define STATUS_LED_PIN     4
+#define STATUS_LED_PIN     4 // Restored Flash LED per user request
 
 // ── Timing ───────────────────────────────────────────────────────────────────
 // Send one frame every 100 ms → ~10 fps, matches backend config.
@@ -30,9 +30,9 @@ const bool  ENABLE_BUZZER = true;
 #define MAX_RETRIES          3
 #define RETRY_BASE_MS      150
 
-// LED heartbeat: 30 ms on, 2970 ms off — subtle "alive" pulse when normal.
-#define LED_HB_ON_MS         30
-#define LED_HB_OFF_MS      2970
+// LED heartbeat: 10 ms on, 6000 ms off — electric meter style pulse
+#define LED_HB_ON_MS         10
+#define LED_HB_OFF_MS      6000
 #define LED_DROWSY_MS       120
 
 
@@ -278,7 +278,7 @@ void wifiMaintain() {
   if (!wifiBeginIssued) {
     WiFi.mode(WIFI_STA);
     WiFi.setSleep(false);
-    WiFi.setTxPower(WIFI_POWER_13dBm);
+    WiFi.setTxPower(WIFI_POWER_8_5dBm);
     WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
     wifiBeginIssued    = true;
     lastWiFiAttemptMs  = now;
