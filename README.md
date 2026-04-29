@@ -18,3 +18,5 @@ Eye Aspect Ratio (EAR) is computed from facial landmarks and evaluated over cons
 For detailed architecture, design decisions, and implementation, refer to the `docs/` directory.
 
 Developed as a micro project for college coursework.
+
+![Project Preview](img.jpg)
