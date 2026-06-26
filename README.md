@@ -19,4 +19,4 @@ For detailed architecture, design decisions, and implementation, refer to the `d
 
 Developed as a micro project for college coursework.
 
-![Project Preview](img.jpg)
+![Project Preview](img.png)
